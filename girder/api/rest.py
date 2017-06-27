@@ -27,11 +27,13 @@ import six
 import sys
 import traceback
 
+from dogpile.cache.util import kwarg_function_key_generator
 from . import docs
 from girder import events, logger, logprint
 from girder.constants import SettingKey, TokenScope, SortDir
 from girder.models.model_base import AccessException, GirderException, ValidationException
 from girder.utility import toBool, config, JsonEncoder, optionalArgumentDecorator
+from girder.utility.cache import requestCache
 from girder.utility.model_importer import ModelImporter
 from six.moves import range, urllib
 
@@ -135,44 +137,7 @@ def iterBody(length=READ_BUFFER_LEN, strictLength=False):
             yield buf
 
 
-def _cacheAuthUser(fun):
-    """
-    This decorator for getCurrentUser ensures that the authentication procedure
-    is only performed once per request, and is cached on the request for
-    subsequent calls to getCurrentUser().
-    """
-    def inner(returnToken=False, *args, **kwargs):
-        if not returnToken and hasattr(cherrypy.request, 'girderUser'):
-            return cherrypy.request.girderUser
-
-        user = fun(returnToken, *args, **kwargs)
-        if isinstance(user, tuple):
-            setCurrentUser(user[0])
-        else:
-            setCurrentUser(user)
-
-        return user
-    return inner
-
-
-def _cacheAuthToken(fun):
-    """
-    This decorator for getCurrentToken ensures that the token lookup
-    is only performed once per request, and is cached on the request for
-    subsequent calls to getCurrentToken().
-    """
-    def inner(*args, **kwargs):
-        if hasattr(cherrypy.request, 'girderToken'):
-            return cherrypy.request.girderToken
-
-        token = fun(*args, **kwargs)
-        setattr(cherrypy.request, 'girderToken', token)
-
-        return token
-    return inner
-
-
-@_cacheAuthToken
+@requestCache.cache_on_arguments(function_key_generator=kwarg_function_key_generator)
 def getCurrentToken(allowCookie=False):
     """
     Returns the current valid token object that was passed via the token header
@@ -196,13 +161,16 @@ def getCurrentToken(allowCookie=False):
         tokenStr = cherrypy.request.cookie['girderToken'].value
 
     if not tokenStr:
-        return None
+        token = None
+    else:
+        token = ModelImporter.model('token').load(tokenStr, force=True,
+                                                  objectId=False)
 
-    return ModelImporter.model('token').load(tokenStr, force=True,
-                                             objectId=False)
+    setattr(cherrypy.request, 'girderToken', token)
+    return token
 
 
-@_cacheAuthUser
+@requestCache.cache_on_arguments(function_key_generator=kwarg_function_key_generator)
 def getCurrentUser(returnToken=False):
     """
     Returns the currently authenticated user based on the token header or
@@ -222,6 +190,8 @@ def getCurrentUser(returnToken=False):
     token = getCurrentToken()
 
     def retVal(user, token):
+        setCurrentUser(user)
+
         if returnToken:
             return user, token
         else:

@@ -79,6 +79,7 @@ class IncorrectUploadLengthError(RuntimeError):
 class HttpError(Exception):
     """
     Raised if the server returns an error status code from a request.
+    @deprecated
     """
     def __init__(self, status, text, url, method):
         super(HttpError, self).__init__('HTTP error %s: %s %s' % (status, method, url))
@@ -336,12 +337,12 @@ class GirderClient(object):
             url = self.urlBase + 'user/authentication'
             authResponse = self._requestFunc('get')(url, auth=(username, password))
 
-            if authResponse.status_code == 404:
-                raise HttpError(404, authResponse.text, url, 'GET')
+            if authResponse.status_code in (401, 403):
+                raise AuthenticationError()
+
+            authResponse.raise_for_status()
 
             resp = authResponse.json()
-            if 'authToken' not in resp:
-                raise AuthenticationError()
 
             self.setToken(resp['authToken']['token'])
 
@@ -479,15 +480,12 @@ class GirderClient(object):
             url, params=parameters, data=data, files=files, json=json, headers=_headers)
 
         # If success, return the json object. Otherwise throw an exception.
-        if result.status_code in (200, 201):
-            if jsonResp:
-                return result.json()
-            else:
-                return result
-        # TODO handle 300-level status (follow redirect?)
+        result.raise_for_status()
+
+        if jsonResp:
+            return result.json()
         else:
-            raise HttpError(
-                status=result.status_code, url=result.url, method=method, text=result.text)
+            return result
 
     def get(self, path, parameters=None, jsonResp=True):
         """
@@ -1180,8 +1178,8 @@ class GirderClient(object):
 
         url = '%sfile/%s/download' % (self.urlBase, fileId)
         req = self._requestFunc('get')(url, stream=True, headers={'Girder-Token': self.token})
-        if not req.ok:
-            raise HttpError(req.status_code, req.text, url, 'GET')
+        req.raise_for_status()
+
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             with self.progressReporterCls(
                     label=progressFileName,
